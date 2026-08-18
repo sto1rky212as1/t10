@@ -1,13 +1,13 @@
 name: Shadow_Harvest
 on:
   schedule:
-    - cron: '5 * * * *'        # كل ساعة عند الدقيقة 5
-  workflow_dispatch:           # للتشغيل اليدوي
+    - cron: '5 * * * *'
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 360       # أقصى وقت 6 ساعات (الحد الأقصى المجاني)
+    timeout-minutes: 360
     steps:
     - uses: actions/checkout@v3
     - name: Setup Python
@@ -16,5 +16,5 @@ jobs:
         python-version: '3.10'
     - name: Install dependencies
       run: pip install requests
-    - name: Run Secret Harvester (Infinite Loop)
+    - name: Run Secret Harvester (5 hours)
       run: python harvester.py
