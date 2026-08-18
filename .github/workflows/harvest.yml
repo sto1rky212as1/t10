@@ -1,0 +1,24 @@
+name: Shadow_Harvest
+on:
+  schedule:
+    - cron: '5 * * * *'  # يُنفذ في الدقيقة 5 من كل ساعة
+  workflow_dispatch:     # للتشغيل اليدوي الفوري
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v3
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: pip install requests pygithub
+    - name: Run Secret Harvester
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # للبحث في الـ API
+        TELEGRAM_BOT: ${{ secrets.TELEGRAM_BOT }} # توكن البوت الخاص بك
+        TELEGRAM_CHAT: ${{ secrets.TELEGRAM_CHAT }} # معرف الشات
+      run: python harvester.py
